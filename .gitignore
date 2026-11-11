@@ -1,0 +1,7 @@
+# Your own data never goes in this repo
+/bus.db
+/bus.db-wal
+/bus.db-shm
+/kb/
+/.backup/
+.DS_Store
