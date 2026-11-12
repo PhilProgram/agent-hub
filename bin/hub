@@ -24,13 +24,18 @@ hub — shared skills, knowledge base and message bus for local agents
   hub skill new <name>                   scaffold skills/<name>/SKILL.md from the template and link it
   hub skill list                         skills with their one-line descriptions
   hub sync                               (re)link every skill into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
-  hub digest <agent>                     short block for session-start hooks (empty when nothing new)
+  hub search <text>                      case-insensitive search across kb/ and skills/
+  hub lint                               check skills, kb index and links (exit 1 on errors)
+  hub digest <agent>                     session-start block: this project's kb facts, unread messages
   hub ask <claude|codex> <question>      ask the other agent as a subprocess (costs tokens)
   hub status                             counts and link health
 USAGE
 }
 
 die() { printf 'hub: %s\n' "$*" >&2; exit 1; }
+# Reject stray arguments and unknown options instead of silently ignoring them.
+no_more() { [ $# -eq 0 ] || die "unexpected argument '$1' (see 'hub help')"; }
+not_flag() { case "${1:-}" in -*) die "unknown option '$1' (see 'hub help')" ;; esac; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
 need sqlite3
 
@@ -65,10 +70,22 @@ SQL
 }
 init_db
 
-project_name() { basename "${HUB_PROJECT:-$PWD}"; }
+# Project = the nearest directory (cwd or an ancestor) that has kb/projects/<name>.md,
+# so a session started in a subfolder still finds its project. Falls back to basename(cwd).
+project_name() {
+  local d="${HUB_PROJECT:-$PWD}"
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+    [ -f "$KB/projects/$(basename "$d").md" ] && { basename "$d"; return 0; }
+    d=$(dirname "$d")
+  done
+  basename "${HUB_PROJECT:-$PWD}"
+}
 
 cmd_inbox() {
   local agent="${1:-}"; [ -n "$agent" ] || die "usage: hub inbox <agent> [--all]"
+  not_flag "$agent"
+  case "${2:-}" in ''|--all) ;; *) die "unknown option '$2' (usage: hub inbox <agent> [--all])" ;; esac
+  [ $# -le 2 ] || die "unexpected argument '$3'"
   local where="to_agent=$(q "$agent")"
   [ "${2:-}" = "--all" ] || where="$where AND read_at IS NULL"
   local n; n=$(sq "SELECT count(*) FROM messages WHERE $where")
@@ -79,7 +96,9 @@ cmd_inbox() {
 
 cmd_post() {
   local from="${HUB_AGENT:-}"
-  if [ "${1:-}" = "--from" ]; then from="$2"; shift 2; fi
+  if [ "${1:-}" = "--from" ]; then [ $# -ge 2 ] || die "--from needs a name"; from="$2"; shift 2; fi
+  not_flag "${1:-}"
+  [ $# -le 3 ] || die "too many arguments: quote the subject and body"
   local to="${1:-}" subject="${2:-}" body="${3:-}"
   [ -n "$to" ] && [ -n "$subject" ] || die "usage: hub post [--from <me>] <to> <subject> [body]"
   [ -n "$from" ] || die "sender unknown: set HUB_AGENT or pass --from <me>"
@@ -92,9 +111,11 @@ cmd_ack() {
   local id="${1:-}"; [ -n "$id" ] || die "usage: hub ack <id>|all <agent>"
   if [ "$id" = "all" ]; then
     local agent="${2:-}"; [ -n "$agent" ] || die "usage: hub ack all <agent>"
+    not_flag "$agent"; [ $# -le 2 ] || die "unexpected argument '$3'"
     sq "UPDATE messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE to_agent=$(q "$agent") AND read_at IS NULL"
   else
     case "$id" in *[!0-9]*) die "message id must be a number" ;; esac
+    [ $# -le 1 ] || die "unexpected argument '$2'"
     sq "UPDATE messages SET read_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=$id"
   fi
   echo "acked"
@@ -103,11 +124,15 @@ cmd_ack() {
 cmd_log() {
   local agent="${1:-}" kind="${2:-}" detail="${3:-}"
   [ -n "$agent" ] && [ -n "$kind" ] || die "usage: hub log <agent> <kind> [detail]"
+  not_flag "$agent"; not_flag "$kind"
+  [ $# -le 3 ] || die "too many arguments: quote the detail"
   sq "INSERT INTO events(agent,project,kind,detail) VALUES($(q "$agent"),$(q "$(project_name)"),$(q "$kind"),$(q "$detail"))"
 }
 
 cmd_activity() {
   local n="${1:-20}"
+  case "$n" in ''|*[!0-9]*) die "usage: hub activity [n]  (n is a number)" ;; esac
+  [ $# -le 1 ] || die "unexpected argument '$2'"
   sq "SELECT ts||'  '||agent||coalesce('  ['||project||']','')||'  '||kind||coalesce('  '||substr(replace(detail,char(10),' '),1,160),'') FROM events ORDER BY id DESC LIMIT $n"
 }
 
@@ -123,6 +148,7 @@ kb_path() {
 
 cmd_kb() {
   if [ -z "${1:-}" ]; then cat "$KB/INDEX.md"; return 0; fi
+  not_flag "$1"; [ $# -le 1 ] || die "unexpected argument '$2'"
   local f; f=$(kb_path "$1")
   [ -f "$f" ] || die "no kb file for '$1' (would be $f)"
   cat "$f"
@@ -141,6 +167,8 @@ cmd_note() {
   local target="${1:-}" text="${2:-}"
   [ -n "$target" ] && [ -n "$text" ] || die "usage: hub note <projects|topics>/<name> <text>"
   case "$target" in projects/*|topics/*) ;; *) die "target must start with projects/ or topics/" ;; esac
+  case "${target#*/}" in ''|*[!A-Za-z0-9._-]*|.*) die "name after projects/ or topics/ must be letters, digits, . _ - only" ;; esac
+  [ $# -le 2 ] || die "too many arguments: put the whole fact in quotes"
   local f="$KB/$target.md"
   mkdir -p "$(dirname "$f")"
   [ -f "$f" ] || printf '# %s\n\n' "$(basename "$target")" > "$f"
@@ -165,6 +193,7 @@ link_skill() {
 }
 
 cmd_sync() {
+  no_more "$@"
   local s n
   for s in "$SKILLS"/*/; do
     n=$(basename "$s"); [ "$n" = "_TEMPLATE" ] && continue
@@ -178,7 +207,8 @@ cmd_skill() {
   case "${1:-}" in
     new)
       local name="${2:-}"; [ -n "$name" ] || die "usage: hub skill new <kebab-name>"
-      case "$name" in *[!a-z0-9-]*) die "name must be kebab-case: a-z 0-9 -" ;; esac
+      case "$name" in -*|*[!a-z0-9-]*) die "name must be kebab-case (a-z 0-9 -) and not start with -" ;; esac
+      [ $# -le 2 ] || die "unexpected argument '$3'"
       [ -e "$SKILLS/$name" ] && die "skill '$name' already exists"
       mkdir -p "$SKILLS/$name/scripts"
       sed "s/SKILL_NAME/$name/g" "$SKILLS/_TEMPLATE/SKILL.md" > "$SKILLS/$name/SKILL.md"
@@ -186,6 +216,7 @@ cmd_skill() {
       echo "created $SKILLS/$name/SKILL.md (linked). Fill it in: description, procedure, scripts, gotchas, last verified."
       ;;
     list)
+      shift; no_more "$@"
       local s n desc
       for s in "$SKILLS"/*/; do
         n=$(basename "$s"); [ "$n" = "_TEMPLATE" ] && continue
@@ -197,25 +228,140 @@ cmd_skill() {
   esac
 }
 
+# Session-start block. Prints this project's kb facts in full (they are short, and an agent
+# told to "run hub kb" often doesn't), unread messages, and when the other agent last worked
+# in THIS project. Never prints another agent's message text or activity from other projects.
 cmd_digest() {
   local agent="${1:-}"; [ -n "$agent" ] || die "usage: hub digest <agent>"
-  local n; n=$(sq "SELECT count(*) FROM messages WHERE to_agent=$(q "$agent") AND read_at IS NULL")
+  not_flag "$agent"; [ $# -le 1 ] || die "unexpected argument '$2'"
+  local max="${HUB_DIGEST_FACTS:-40}"
+  case "$max" in ''|*[!0-9]*) max=40 ;; esac
   local proj; proj=$(project_name)
   local out=""
-  if [ "$n" != "0" ]; then out+=$(cmd_inbox "$agent")$'\n'; fi
-  local pf="$KB/projects/$proj.md"
-  if [ -f "$pf" ] && [ "$(grep -c '^- ' "$pf")" != "0" ]; then
-    out+="kb/projects/$proj.md has $(grep -c '^- ' "$pf") fact(s): run 'hub kb $proj' before exploring."$'\n'
+  local pf="$KB/projects/$proj.md" total
+  if [ -f "$pf" ]; then
+    total=$(grep -c '^- ' "$pf" || true)
+    if [ "${total:-0}" -gt 0 ]; then
+      out+="kb facts for $proj (kb/projects/$proj.md):"$'\n'
+      if [ "$total" -gt "$max" ]; then
+        out+="($((total - max)) older fact(s) not shown: hub kb $proj)"$'\n'
+      fi
+      out+=$(grep '^- ' "$pf" | tail -n "$max")$'\n'
+    fi
   fi
-  local last; last=$(sq "SELECT ts||' '||agent||' '||kind||coalesce(' '||substr(replace(detail,char(10),' '),1,100),'') FROM events WHERE agent<>$(q "$agent") ORDER BY id DESC LIMIT 1")
-  [ -n "$last" ] && out+="other agent last seen: $last"$'\n'
-  [ -n "$out" ] && printf '[agent-hub] %s\n' "$out"
+  local n; n=$(sq "SELECT count(*) FROM messages WHERE to_agent=$(q "$agent") AND read_at IS NULL")
+  if [ "$n" != "0" ]; then out+=$(cmd_inbox "$agent")$'\n'; fi
+  local last; last=$(sq "SELECT agent||' last active here: '||ts FROM events WHERE agent<>$(q "$agent") AND project=$(q "$proj") ORDER BY id DESC LIMIT 1")
+  [ -n "$last" ] && out+="$last"$'\n'
+  [ -n "$out" ] && printf '[agent-hub]\n%s' "$out"
   return 0
+}
+
+cmd_search() {
+  [ $# -ge 1 ] || die "usage: hub search <text>"
+  not_flag "$1"
+  local term="$*" hits
+  hits=$(cd "$HUB" && grep -rniIF -- "$term" kb skills 2>/dev/null | grep -v '^skills/_TEMPLATE/' | cut -c1-240 || true)
+  if [ -z "$hits" ]; then
+    echo "no matches for '$term' in kb/ or skills/"
+    return 1
+  fi
+  printf '%s\n' "$hits"
+  echo "($(printf '%s\n' "$hits" | wc -l | tr -d ' ') line(s) in $(printf '%s\n' "$hits" | cut -d: -f1 | sort -u | wc -l | tr -d ' ') file(s))"
+}
+
+# frontmatter field from a SKILL.md (single-line values only)
+fm() { awk -v k="$2" 'NR==1&&$0!="---"{exit} NR>1&&$0=="---"{exit} index($0,k":")==1{sub("^"k":[ ]*","");print;exit}' "$1"; }
+
+cmd_lint() {
+  no_more "$@"
+  local max="${HUB_DESC_MAX:-350}" errs=0 warns=0 total=0 count=0
+  local s n f name desc len p rel d tgt
+  err()  { echo "error  $*"; errs=$((errs+1)); }
+  warn() { echo "warn   $*"; warns=$((warns+1)); }
+  local names=()
+  for s in "$SKILLS"/*/; do
+    n=$(basename "$s"); [ "$n" = "_TEMPLATE" ] && continue
+    f="$SKILLS/$n/SKILL.md"
+    if [ ! -f "$f" ]; then err "skills/$n: no SKILL.md"; continue; fi
+    names+=("$n"); count=$((count+1))
+    name=$(fm "$f" name); desc=$(fm "$f" description)
+    [ "$name" = "$n" ] || err "skills/$n: frontmatter name is '${name:-<missing>}', folder is '$n'"
+    if [ -z "$desc" ]; then err "skills/$n: no one-line description (it is what makes the skill trigger)"; fi
+    case "$desc" in '>'*|'|'*) err "skills/$n: description is a multi-line YAML block; put it on one line" ;; esac
+    # disable-model-invocation skills are slash-command aliases: their description never loads into context
+    if [ "$(fm "$f" disable-model-invocation)" != "true" ]; then
+      len=$(printf '%s' "$desc" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' '); total=$((total+len))
+      [ "$len" -le "$max" ] || warn "skills/$n: description is $len chars (budget $max); it loads into every session"
+    fi
+    # declared outside dependencies: <!-- hub-lint: external ~/some/dir (optional reason) --> (one per line)
+    local ext; ext=$(sed -nE 's/.*<!-- *hub-lint: *external +([^ ]+).*-->.*/\1/p' "$f" | sed -E "s#^~/#$HOME/#; s#^\\\$HOME/#$HOME/#")
+    grep -qE 'SKILL_NAME|One or two lines\. What this does' "$f" && err "skills/$n: still contains template placeholder text"
+    # absolute script paths: must exist; outside the hub is fragile
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$p" in *'<'*|*'>'*) continue ;; esac
+      tgt="$p"; case "$tgt" in '~/'*) tgt="$HOME/${tgt#\~/}" ;; '$HOME/'*) tgt="$HOME/${tgt#\$HOME/}" ;; esac
+      if [ ! -e "$tgt" ]; then err "skills/$n: references $p, which does not exist"
+      else
+        case "$tgt" in "$HUB"/*) continue ;; esac
+        local declared=0 e
+        for e in $ext; do case "$tgt" in "${e%/}"/*) declared=1 ;; esac; done
+        [ "$declared" = 1 ] || warn "skills/$n: depends on $p, outside the hub (move it into skills/$n/scripts/, or declare it with <!-- hub-lint: external <dir> -->)"
+      fi
+    done < <(grep -oE '(~|\$HOME|/Users/[^/[:space:]]+)/[^[:space:]`"'"'"')]+\.(sh|bash|mjs|cjs|js|ts|py|php|rb)' "$f" | sort -u)
+    # relative script paths: fine when they sit in the skill folder, otherwise they live in some repo
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      case "$rel" in *'<'*|*'>'*) continue ;; esac
+      [ -e "$SKILLS/$n/${rel#./}" ] || warn "skills/$n: mentions $rel, not in the skill folder (if it lives in a repo, make sure the repo tracks it)"
+    done < <(grep -oE '(^|[[:space:]`(])\.?/?[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+\.(sh|bash|mjs|cjs|js|ts|py)\b' "$f" | sed -E 's/^[[:space:]`(]//' | grep -vE '^(~|/|\$)' | sort -u)
+  done
+  # likely duplicates: two skill names sharing a word stem of 5+ letters (grill-me / grilling).
+  # Skills that name each other are deliberately related (an alias, a procedure + its toolbox): skip those.
+  local i j a b ta tb
+  for ((i=0; i<${#names[@]}; i++)); do
+    for ((j=i+1; j<${#names[@]}; j++)); do
+      a=${names[$i]}; b=${names[$j]}
+      if grep -qwF -- "$b" "$SKILLS/$a/SKILL.md" || grep -qwF -- "$a" "$SKILLS/$b/SKILL.md"; then continue; fi
+      for ta in ${a//-/ }; do
+        [ ${#ta} -ge 5 ] || continue
+        for tb in ${b//-/ }; do
+          [ ${#tb} -ge 5 ] || continue
+          if [ "${ta:0:5}" = "${tb:0:5}" ]; then warn "skills/$a and skills/$b look like overlapping skills (shared word '${ta:0:5}'); merge them if they do the same job"; break 2; fi
+        done
+      done
+    done
+  done
+  # links: every skill linked everywhere, no dangling hub links left behind
+  for d in "${LINK_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    for n in ${names[@]+"${names[@]}"}; do
+      [ -L "$d/$n" ] && [ "$(readlink "$d/$n")" = "$SKILLS/$n" ] || err "$d/$n is not linked to the hub (run 'hub sync')"
+    done
+    for p in "$d"/*; do
+      [ -L "$p" ] || continue
+      case "$(readlink "$p")" in "$SKILLS"/*) [ -e "$p" ] || err "$p is a dangling link into the hub (remove it)" ;; esac
+    done
+  done
+  # kb: index entries point at real files, every file is in the index
+  if [ -f "$KB/INDEX.md" ]; then
+    while IFS= read -r rel; do
+      [ -f "$KB/$rel" ] || err "kb/INDEX.md links $rel, which does not exist"
+    done < <(grep -oE '\]\((projects|topics)/[^)]+\.md\)' "$KB/INDEX.md" | sed -E 's/^\]\(//; s/\)$//')
+    while IFS= read -r p; do
+      rel=${p#"$KB"/}
+      grep -qF "($rel)" "$KB/INDEX.md" || warn "kb/$rel is not listed in kb/INDEX.md"
+    done < <(find "$KB/projects" "$KB/topics" -name '*.md' 2>/dev/null | sort)
+  fi
+  echo "lint: $count skill(s), model-visible descriptions total $total chars; $errs error(s), $warns warning(s)"
+  [ "$errs" -eq 0 ]
 }
 
 cmd_ask() {
   local who="${1:-}" question="${2:-}"
   [ -n "$who" ] && [ -n "$question" ] || die "usage: hub ask <claude|codex> <question>"
+  [ $# -le 2 ] || die "too many arguments: put the question in quotes"
   case "$who" in
     claude) need claude; claude -p "$question" ;;
     codex)  command -v codex >/dev/null 2>&1 || die "codex CLI not installed. Install: npm i -g @openai/codex"
@@ -225,6 +371,7 @@ cmd_ask() {
 }
 
 cmd_status() {
+  no_more "$@"
   echo "hub: $HUB"
   echo "skills: $(ls -d "$SKILLS"/*/ | grep -vc _TEMPLATE)"
   echo "kb files: $(find "$KB" -name '*.md' ! -name INDEX.md | wc -l | tr -d ' ')"
@@ -254,8 +401,10 @@ case "$cmd" in
   skill) cmd_skill "$@" ;;
   sync) cmd_sync "$@" ;;
   digest) cmd_digest "$@" ;;
+  search) cmd_search "$@" ;;
+  lint) cmd_lint "$@" ;;
   ask) cmd_ask "$@" ;;
   status) cmd_status "$@" ;;
   help|-h|--help) usage ;;
-  *) usage; exit 1 ;;
+  *) printf "hub: unknown command '%s'\n\n" "$cmd" >&2; usage >&2; exit 1 ;;
 esac

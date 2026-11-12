@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Claude Code hooks for the agent hub (wired in ~/.claude/settings.json).
-#   claude-hub.sh session-start   SessionStart: print the hub digest (unread inbox, kb hint, other agent's last activity)
+#   claude-hub.sh session-start   SessionStart: print the hub digest (this project's kb facts, unread inbox, other agent's last time here)
 #   claude-hub.sh prompt          UserPromptSubmit: print only messages that arrived since this hook last ran for this session
 #   claude-hub.sh stop            Stop: log a turn-ended event so the other agent can see where Claude was last active
 # stdout of SessionStart/UserPromptSubmit is added to the model's context, so it stays empty when there is nothing new.
@@ -32,8 +32,9 @@ case "$MODE" in
     fi
     ;;
   stop)
+    # Keep $MARK: it records which messages this session has already been shown.
+    # (Deleting it here made every unread message reappear on every later turn.)
     "$BIN" log claude turn-ended "${CWD:-}" 2>/dev/null || true
-    rm -f "$MARK" 2>/dev/null || true
     ;;
 esac
 exit 0

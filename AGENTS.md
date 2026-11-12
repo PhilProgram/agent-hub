@@ -4,7 +4,8 @@ The shared library is `~/agent-hub`. Its CLI is `hub` (linked at `~/.local/bin/h
 Your agent name is `claude` in Claude Code and `codex` in Codex.
 
 ## At the start of a task
-- Run `hub kb` and open any project or topic file that matches the task before exploring code. If a skill covers the task, use it instead of rediscovering the procedure.
+- If the session-start digest (`[agent-hub]`) already printed this project's kb facts, use them. Otherwise run `hub kb <project>`, or `hub search <term>` to find facts and skills across every project, before exploring code.
+- If a skill covers the task, use it instead of rediscovering the procedure.
 
 ## While working
 - When you learn a fact the next session would otherwise rediscover (a flag, a gotcha, where something lives, how to run something, which server runs what), append it: `hub note projects/<project> "..."` or `hub note topics/<topic> "..."`. One line, concrete, no narrative.
@@ -12,6 +13,7 @@ Your agent name is `claude` in Claude Code and `codex` in Codex.
 - Never write secrets (passwords, tokens, keys) into the kb or a skill. Name the env var or keychain item instead.
 
 ## Before finishing a task
+- After adding or editing a skill, run `hub lint` and fix any errors it reports.
 - If you worked out a reusable procedure that took real effort (a test script and how to run it, a setup sequence, a debugging recipe, a deploy/verify flow), save it as a skill: `hub skill new <name>`, then fill `~/agent-hub/skills/<name>/SKILL.md` and put the script next to it. Keep the frontmatter `description` precise: it is what triggers the skill next time.
 - Scripts that only make sense inside one repo stay in that repo; the skill then says where they are and how to run them.
 - Do not write session narrative into the hub. Facts and procedures only.
