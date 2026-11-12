@@ -8,7 +8,7 @@ Your agent name is `claude` in Claude Code and `codex` in Codex.
 - If a skill covers the task, use it instead of rediscovering the procedure.
 
 ## While working
-- When you learn a fact the next session would otherwise rediscover (a flag, a gotcha, where something lives, how to run something, which server runs what), append it: `hub note projects/<project> "..."` or `hub note topics/<topic> "..."`. One line, concrete, no narrative.
+- When you learn a fact the next session would otherwise rediscover (a flag, a gotcha, where something lives, how to run something, which server runs what), append it: `hub note projects/<project> "..."` or `hub note topics/<topic> "..."`. One line, concrete, no narrative. Lead with the point: the session digest shows each project fact cut to about 220 characters and only about the newest 13, so put long detail (research, findings, transcripts of what happened) in a `topics/` file and keep `projects/` for how to work in that project.
 - Treat kb facts as "true when written": verify a server, version or path fact before acting on it if the note is old or the action is hard to undo.
 - Never write secrets (passwords, tokens, keys) into the kb or a skill. Name the env var or keychain item instead.
 

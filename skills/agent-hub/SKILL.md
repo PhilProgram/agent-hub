@@ -17,7 +17,7 @@ Shared library for every agent on this machine. CLI: `~/agent-hub/bin/hub` (`hub
 `hub note projects/<project> "fact"` or `hub note topics/<topic> "fact"`. Creates the file if needed and lists it in `kb/INDEX.md`.
 
 ## Read
-In Claude Code the session-start digest already prints the current project's facts (the project is the nearest folder, cwd or above, with a `kb/projects/<name>.md`). `hub kb` prints the index. `hub kb <name>` prints a project or topic file. `hub search <text>` searches every kb file and skill (including scripts) case-insensitively, and says so when nothing matches.
+In Claude Code the session-start digest already prints the current project's facts (the project is the nearest folder, cwd or above, with a `kb/projects/<name>.md`). It shows the newest facts that fit about 3,000 characters, each cut to about 220 (`HUB_DIGEST_BYTES`, `HUB_DIGEST_WIDTH`, `HUB_DIGEST_FACTS`); a fact ending in `…` was shortened, so run `hub kb <project>` when it matters. `hub kb` prints the index. `hub kb <name>` prints a project or topic file. `hub search <text>` searches every kb file and skill (including scripts) case-insensitively, and says so when nothing matches.
 
 ## Check
 `hub lint` after adding or editing a skill. Errors (exit 1): name/folder mismatch, missing or multi-line description, leftover template text, a referenced script that doesn't exist, broken skill links, kb index entries with no file. Warnings: descriptions over the length budget (`HUB_DESC_MAX`, default 350), overlapping skill names, scripts living outside the hub, kb files missing from the index.

@@ -39,9 +39,27 @@ has "digest shows second fact" "$d" "- second fact"
 has "digest names project from subfolder" "$d" "kb facts for app"
 for i in $(seq 1 50); do "$H" note projects/big "fact $i" >/dev/null; done
 d=$(HUB_PROJECT="$T/work/big" "$H" digest claude)
-has "digest caps long files" "$d" "(10 older fact(s) not shown: hub kb big)"
+has "digest caps fact count" "$d" "newest 40 of 50 shown; full text: hub kb big"
 has "digest shows newest fact" "$d" "- fact 50"
 hasnt "digest hides oldest fact" "$d" "- fact 1 ("
+
+# digest: long facts are shortened, total size is budgeted, notes don't get two dates
+longfact=$(printf 'L%.0s' $(seq 1 600))
+for i in $(seq 1 30); do "$H" note projects/wordy "fact $i $longfact" >/dev/null; done
+d=$(HUB_PROJECT="$T/work/wordy" "$H" digest claude)
+bytes=$(printf '%s' "$d" | wc -c | tr -d ' ')
+[ "$bytes" -le 3300 ] && ok "digest stays within budget ($bytes bytes)" || bad "digest too big: $bytes bytes"
+has "digest says facts were shortened" "$d" "shortened (…); full text: hub kb wordy"
+has "digest keeps newest long fact" "$d" "- fact 30 LLL"
+maxline=$(printf '%s\n' "$d" | awk '{ if (length($0) > m) m = length($0) } END { print m }')
+[ "$maxline" -le 240 ] && ok "digest lines shortened (longest $maxline bytes)" || bad "digest line too long: $maxline"
+d=$(HUB_PROJECT="$T/work/wordy" HUB_DIGEST_BYTES=100000 HUB_DIGEST_WIDTH=100000 "$H" digest claude)
+has "digest budget is configurable" "$d" "- fact 1 LLL"
+"$H" note projects/dated "already dated (2026-01-02, codex)" >/dev/null
+"$H" note projects/dated "plain fact" >/dev/null
+n=$(grep -cE '\([0-9-]+[^)]*\) \([0-9-]+' "$HUB_HOME/kb/projects/dated.md")
+[ "$n" = 0 ] && ok "note does not stack a second date" || bad "note stacked dates: $(cat "$HUB_HOME/kb/projects/dated.md")"
+grep -qE '^- plain fact \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$' "$HUB_HOME/kb/projects/dated.md" && ok "note still dates plain facts" || bad "plain fact not dated"
 d=$(HUB_PROJECT="$T/work/nothing" "$H" digest claude)
 [ -z "$d" ] && ok "digest empty when nothing to say" || bad "digest not empty: $d"
 

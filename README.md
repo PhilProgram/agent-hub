@@ -70,7 +70,7 @@ kb facts for example-app (kb/projects/example-app.md):
 codex last active here: 2026-11-10T20:36:33Z
 ```
 
-Long project files are capped at the newest 40 facts (`HUB_DIGEST_FACTS`). The digest never shows another agent's replies or activity from other projects.
+The digest is budgeted so it can't crowd the context: the newest facts that fit about 3,000 characters, each cut to about 220 and marked `…` when shortened (`HUB_DIGEST_BYTES`, `HUB_DIGEST_WIDTH`, `HUB_DIGEST_FACTS`). `hub lint` warns when a project file has outgrown it. The digest never shows another agent's replies or activity from other projects.
 
 Find anything across every project and skill:
 
@@ -111,7 +111,7 @@ hub ask <claude|codex> <question>          run the other agent once for a second
 hub status                                 counts and link health
 ```
 
-`HUB_HOME` moves the hub somewhere other than `~/agent-hub`. `HUB_AGENT` sets the sender name for `post` and `note`. `HUB_DIGEST_FACTS` (default 40) and `HUB_DESC_MAX` (default 350) tune the digest and lint.
+`HUB_HOME` moves the hub somewhere other than `~/agent-hub`. `HUB_AGENT` sets the sender name for `post` and `note`. `HUB_DIGEST_BYTES` (3000), `HUB_DIGEST_WIDTH` (220), `HUB_DIGEST_FACTS` (40) and `HUB_DESC_MAX` (350) tune the digest and lint.
 
 Unknown options and stray arguments are errors, never silently ignored: `hub sync --dry-run` refuses instead of doing a real sync, and an unquoted `hub note projects/app two words` refuses instead of saving only "two".
 

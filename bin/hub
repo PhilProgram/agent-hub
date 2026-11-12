@@ -172,7 +172,13 @@ cmd_note() {
   local f="$KB/$target.md"
   mkdir -p "$(dirname "$f")"
   [ -f "$f" ] || printf '# %s\n\n' "$(basename "$target")" > "$f"
-  printf -- '- %s (%s%s)\n' "$text" "$(date +%Y-%m-%d)" "${HUB_AGENT:+, $HUB_AGENT}" >> "$f"
+  # agents often end a note with its own "(YYYY-MM-DD ...)"; don't stack a second date on it
+  local re='\([0-9]{4}-[0-9]{2}-[0-9]{2}[^)]*\)[[:space:]]*$'
+  if [[ "$text" =~ $re ]]; then
+    printf -- '- %s\n' "$text" >> "$f"
+  else
+    printf -- '- %s (%s%s)\n' "$text" "$(date +%Y-%m-%d)" "${HUB_AGENT:+, $HUB_AGENT}" >> "$f"
+  fi
   index_add "$target.md"
   echo "noted in $target.md"
 }
@@ -228,25 +234,47 @@ cmd_skill() {
   esac
 }
 
+# Pick the facts a digest shows from a kb file: newest first, each shortened to HUB_DIGEST_WIDTH chars,
+# until HUB_DIGEST_FACTS facts or HUB_DIGEST_BYTES chars are used. Fills DIGEST_LINES (oldest first),
+# DIGEST_TOTAL, DIGEST_SHOWN, DIGEST_CUT. Character-safe in a UTF-8 locale.
+digest_select() {
+  local f="$1" max="${HUB_DIGEST_FACTS:-40}" w="${HUB_DIGEST_WIDTH:-220}" budget="${HUB_DIGEST_BYTES:-3000}"
+  case "$max" in ''|*[!0-9]*) max=40 ;; esac
+  case "$w" in ''|*[!0-9]*) w=220 ;; esac; [ "$w" -ge 40 ] || w=40
+  case "$budget" in ''|*[!0-9]*) budget=3000 ;; esac
+  local LC_ALL; LC_ALL=$(locale -a 2>/dev/null | grep -iE '^(en_US|C)\.utf-?8$' | head -1); [ -n "$LC_ALL" ] || unset LC_ALL
+  local lines=() line i s used=0
+  while IFS= read -r line; do lines+=("$line"); done < <(grep '^- ' "$f" || true)
+  DIGEST_LINES=(); DIGEST_TOTAL=${#lines[@]}; DIGEST_SHOWN=0; DIGEST_CUT=0
+  for ((i=DIGEST_TOTAL-1; i>=0 && DIGEST_SHOWN<max; i--)); do
+    s=${lines[$i]}
+    if [ ${#s} -gt "$w" ]; then s="${s:0:$((w-1))}…"; fi
+    [ $((used + ${#s} + 1)) -le "$budget" ] || break
+    [ "$s" = "${lines[$i]}" ] || DIGEST_CUT=$((DIGEST_CUT+1))
+    used=$((used + ${#s} + 1))
+    DIGEST_LINES=("$s" ${DIGEST_LINES[@]+"${DIGEST_LINES[@]}"})
+    DIGEST_SHOWN=$((DIGEST_SHOWN+1))
+  done
+}
+
 # Session-start block. Prints this project's kb facts in full (they are short, and an agent
 # told to "run hub kb" often doesn't), unread messages, and when the other agent last worked
 # in THIS project. Never prints another agent's message text or activity from other projects.
 cmd_digest() {
   local agent="${1:-}"; [ -n "$agent" ] || die "usage: hub digest <agent>"
   not_flag "$agent"; [ $# -le 1 ] || die "unexpected argument '$2'"
-  local max="${HUB_DIGEST_FACTS:-40}"
-  case "$max" in ''|*[!0-9]*) max=40 ;; esac
   local proj; proj=$(project_name)
   local out=""
-  local pf="$KB/projects/$proj.md" total
+  local pf="$KB/projects/$proj.md"
   if [ -f "$pf" ]; then
-    total=$(grep -c '^- ' "$pf" || true)
-    if [ "${total:-0}" -gt 0 ]; then
-      out+="kb facts for $proj (kb/projects/$proj.md):"$'\n'
-      if [ "$total" -gt "$max" ]; then
-        out+="($((total - max)) older fact(s) not shown: hub kb $proj)"$'\n'
-      fi
-      out+=$(grep '^- ' "$pf" | tail -n "$max")$'\n'
+    digest_select "$pf"
+    if [ "$DIGEST_TOTAL" -gt 0 ]; then
+      local note=""
+      [ "$DIGEST_SHOWN" -lt "$DIGEST_TOTAL" ] && note+=", newest $DIGEST_SHOWN of $DIGEST_TOTAL shown"
+      [ "$DIGEST_CUT" -gt 0 ] && note+=", $DIGEST_CUT shortened (…)"
+      if [ -n "$note" ]; then note="${note#, }; full text: hub kb $proj"; else note="kb/projects/$proj.md"; fi
+      out+="kb facts for $proj ($note):"$'\n'
+      local l; for l in "${DIGEST_LINES[@]}"; do out+="$l"$'\n'; done
     fi
   fi
   local n; n=$(sq "SELECT count(*) FROM messages WHERE to_agent=$(q "$agent") AND read_at IS NULL")
@@ -353,6 +381,11 @@ cmd_lint() {
       rel=${p#"$KB"/}
       grep -qF "($rel)" "$KB/INDEX.md" || warn "kb/$rel is not listed in kb/INDEX.md"
     done < <(find "$KB/projects" "$KB/topics" -name '*.md' 2>/dev/null | sort)
+    # project files feed the session-start digest: flag the ones that no longer fit its budget
+    while IFS= read -r p; do
+      digest_select "$p"
+      [ "$DIGEST_SHOWN" -ge "$DIGEST_TOTAL" ] || warn "kb/${p#"$KB"/}: session digest fits only the newest $DIGEST_SHOWN of $DIGEST_TOTAL facts; drop stale ones or move long detail into a topics/ file"
+    done < <(find "$KB/projects" -name '*.md' 2>/dev/null | sort)
   fi
   echo "lint: $count skill(s), model-visible descriptions total $total chars; $errs error(s), $warns warning(s)"
   [ "$errs" -eq 0 ]
