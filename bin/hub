@@ -8,7 +8,17 @@ DB="$HUB/bus.db"
 SKILLS="$HUB/skills"
 KB="$HUB/kb"
 # Every place an agent looks for skills. Each canonical skill dir gets a symlink in each.
-LINK_DIRS=("$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills")
+# HUB_LINK_DIRS (colon-separated; a leading ~ is expanded) replaces the default list.
+LINK_DIRS=()
+if [ -n "${HUB_LINK_DIRS:-}" ]; then
+  IFS=: read -r -a _link_dirs <<< "$HUB_LINK_DIRS"
+  for _d in ${_link_dirs[@]+"${_link_dirs[@]}"}; do
+    if [ -n "$_d" ]; then LINK_DIRS+=("${_d/#\~/$HOME}"); fi
+  done
+fi
+if [ "${#LINK_DIRS[@]}" -eq 0 ]; then
+  LINK_DIRS=("$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.agents/skills")
+fi
 
 usage() {
   cat <<'USAGE'
@@ -24,7 +34,11 @@ hub — shared skills, knowledge base and message bus for local agents
   hub skill new <name>                   scaffold skills/<name>/SKILL.md from the template and link it
   hub skill list                         skills with their one-line descriptions
   hub sync                               (re)link every skill into ~/.claude/skills, ~/.codex/skills, ~/.agents/skills
+                                         (or the colon-separated folders in HUB_LINK_DIRS)
   hub search <text>                      case-insensitive search across kb/ and skills/
+  hub feedback [--area a] <text>         suggest an improvement to the hub (areas: kb skill cli hooks rules other)
+  hub feedback list [--all] | close <id> <done|rejected|queued> [note]
+  hub council run|dry-run|status|queue   the self-improvement council (see council/README.md)
   hub lint                               check skills, kb index and links (exit 1 on errors)
   hub digest <agent>                     session-start block: this project's kb facts, unread messages
   hub ask <claude|codex> <question>      ask the other agent as a subprocess (costs tokens)
@@ -41,10 +55,28 @@ need sqlite3
 
 sq() { sqlite3 -batch "$DB" "$@"; }
 # SQL string literal
-q() { printf "'%s'" "${1//\'/\'\'}"; }
+# (bash 3.2 keeps the backslashes in "${1//\'/\'\'}", which broke every value with an apostrophe
+#  and let one end the string early; quoting the pattern and replacement works on 3.2 and 5.x)
+q() { local s=$1; s=${s//"'"/"''"}; printf "'%s'" "$s"; }
 
 init_db() {
-  [ -f "$DB" ] && return 0
+  if [ -f "$DB" ]; then
+    # tables added after the first release; cheap no-op once they exist
+    sq >/dev/null <<'SQL'
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY,
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  agent TEXT NOT NULL,
+  project TEXT,
+  area TEXT NOT NULL DEFAULT 'other',
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT,
+  resolved_at TEXT
+);
+SQL
+    return 0
+  fi
   sq >/dev/null <<'SQL'
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS messages (
@@ -66,6 +98,17 @@ CREATE TABLE IF NOT EXISTS events (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_to_unread ON messages(to_agent, read_at);
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY,
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  agent TEXT NOT NULL,
+  project TEXT,
+  area TEXT NOT NULL DEFAULT 'other',
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  resolution TEXT,
+  resolved_at TEXT
+);
 SQL
 }
 init_db
@@ -279,10 +322,54 @@ cmd_digest() {
   fi
   local n; n=$(sq "SELECT count(*) FROM messages WHERE to_agent=$(q "$agent") AND read_at IS NULL")
   if [ "$n" != "0" ]; then out+=$(cmd_inbox "$agent")$'\n'; fi
+  local qn; qn=$(sq "SELECT count(*) FROM feedback WHERE status='queued'")
+  if [ "$qn" != "0" ]; then
+    out+="council: $qn hub improvement(s) queued for a supervised session (hub feedback list --status queued); apply, test and report them to the user when it fits the task, or close them"$'\n'
+  fi
   local last; last=$(sq "SELECT agent||' last active here: '||ts FROM events WHERE agent<>$(q "$agent") AND project=$(q "$proj") ORDER BY id DESC LIMIT 1")
   [ -n "$last" ] && out+="$last"$'\n'
   [ -n "$out" ] && printf '[agent-hub]\n%s' "$out"
   return 0
+}
+
+# Improvement feedback about the hub itself (skills, kb, CLI, hooks, rules). Read by the council.
+FEEDBACK_AREAS="kb skill cli hooks rules other"
+FEEDBACK_STATUSES="open done rejected queued"
+cmd_feedback() {
+  case "${1:-}" in
+    list)
+      shift
+      local where="status='open'"
+      case "${1:-}" in '') ;; --all) where="1=1" ;; --status) [ -n "${2:-}" ] || die "--status needs a value"; where="status=$(q "$2")"; shift ;; *) die "usage: hub feedback list [--all | --status <s>]" ;; esac
+      [ $# -le 1 ] || die "unexpected argument '$2'"
+      local rows; rows=$(sq "SELECT '#'||id||'  '||ts||'  '||agent||coalesce('  ['||project||']','')||'  ('||area||', '||status||')'||char(10)||'    '||replace(body,char(10),char(10)||'    ')||coalesce(char(10)||'    -> '||resolution,'') FROM feedback WHERE $where ORDER BY id")
+      if [ -z "$rows" ]; then echo "feedback: none"; else printf '%s\n' "$rows"; fi
+      ;;
+    close)
+      local id="${2:-}" st="${3:-}" note="${4:-}"
+      [ -n "$id" ] && [ -n "$st" ] || die "usage: hub feedback close <id> <done|rejected|queued> [resolution]"
+      case "$id" in *[!0-9]*) die "feedback id must be a number" ;; esac
+      case " $FEEDBACK_STATUSES " in *" $st "*) [ "$st" != open ] || die "close with done, rejected or queued" ;; *) die "status must be one of: done rejected queued" ;; esac
+      [ $# -le 4 ] || die "too many arguments: quote the resolution"
+      [ "$(sq "SELECT count(*) FROM feedback WHERE id=$id")" = 1 ] || die "no feedback #$id"
+      sq "UPDATE feedback SET status=$(q "$st"), resolution=$(q "$note"), resolved_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=$id"
+      echo "feedback #$id -> $st"
+      ;;
+    ''|-h|--help) die "usage: hub feedback [--area <$(echo $FEEDBACK_AREAS | tr ' ' '|')>] <text> | list [--all|--status s] | close <id> <status> [resolution]" ;;
+    *)
+      local area=other
+      if [ "$1" = "--area" ]; then
+        [ $# -ge 2 ] || die "--area needs a value"
+        area="$2"; shift 2
+        case " $FEEDBACK_AREAS " in *" $area "*) ;; *) die "area must be one of: $FEEDBACK_AREAS" ;; esac
+      fi
+      not_flag "${1:-}"
+      [ $# -eq 1 ] && [ -n "$1" ] || die "put the whole feedback in quotes: hub feedback [--area a] \"text\""
+      local from="${HUB_AGENT:-unknown}"
+      local id; id=$(sq "INSERT INTO feedback(agent,project,area,body) VALUES($(q "$from"),$(q "$(project_name)"),$(q "$area"),$(q "$1")); SELECT last_insert_rowid();")
+      echo "feedback #$id recorded ($area); the council reviews open feedback"
+      ;;
+  esac
 }
 
 cmd_search() {
@@ -345,7 +432,7 @@ cmd_lint() {
       [ -e "$SKILLS/$n/${rel#./}" ] || warn "skills/$n: mentions $rel, not in the skill folder (if it lives in a repo, make sure the repo tracks it)"
     done < <(grep -oE '(^|[[:space:]`(])\.?/?[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+\.(sh|bash|mjs|cjs|js|ts|py)\b' "$f" | sed -E 's/^[[:space:]`(]//' | grep -vE '^(~|/|\$)' | sort -u)
   done
-  # likely duplicates: two skill names sharing a word stem of 5+ letters (grill-me / grilling).
+  # likely duplicates: two skill names sharing a word stem of 5+ letters (draft-it / drafting).
   # Skills that name each other are deliberately related (an alias, a procedure + its toolbox): skip those.
   local i j a b ta tb
   for ((i=0; i<${#names[@]}; i++)); do
@@ -435,6 +522,8 @@ case "$cmd" in
   sync) cmd_sync "$@" ;;
   digest) cmd_digest "$@" ;;
   search) cmd_search "$@" ;;
+  feedback) cmd_feedback "$@" ;;
+  council) [ -x "$HUB/council/run.sh" ] || die "council not installed ($HUB/council/run.sh)"; exec "$HUB/council/run.sh" "$@" ;;
   lint) cmd_lint "$@" ;;
   ask) cmd_ask "$@" ;;
   status) cmd_status "$@" ;;

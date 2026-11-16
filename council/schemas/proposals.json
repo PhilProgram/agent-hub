@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["proposals", "notes"],
+  "properties": {
+    "proposals": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "area", "rationale", "evidence", "change", "files", "risk", "feedback_ids"],
+        "properties": {
+          "id": {"type": "string", "description": "short id unique within this list, e.g. P1"},
+          "title": {"type": "string"},
+          "area": {"type": "string", "enum": ["kb", "skill", "cli", "hooks", "rules", "other"]},
+          "rationale": {"type": "string", "description": "how this makes agents measurably more effective"},
+          "evidence": {"type": "string", "description": "file paths, lint lines, feedback ids or command output that show the problem"},
+          "change": {"type": "string", "description": "exact change: for edits give the old text and the new text"},
+          "files": {"type": "array", "items": {"type": "string"}, "description": "paths relative to the hub root"},
+          "risk": {"type": "string", "enum": ["low", "high"]},
+          "feedback_ids": {"type": "array", "items": {"type": "integer"}}
+        }
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

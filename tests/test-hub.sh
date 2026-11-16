@@ -5,6 +5,7 @@ set -u
 SRC="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 T=$(mktemp -d "${TMPDIR:-/tmp}/hubtest.XXXX")
 export HOME="$T/home" HUB_HOME="$T/hub" TMPDIR="$T/tmp/"
+unset HUB_LINK_DIRS HUB_AGENT HUB_PROJECT
 mkdir -p "$HOME" "$TMPDIR" "$HUB_HOME/kb/projects" "$HUB_HOME/kb/topics" "$HUB_HOME/skills"
 cp -R "$SRC/bin" "$SRC/hooks" "$HUB_HOME/"
 cp -R "$SRC/skills/_TEMPLATE" "$HUB_HOME/skills/"
@@ -101,16 +102,16 @@ hasnt "search skips template" "$("$H" search 'One or two lines' || true)" "_TEMP
 "$H" sync >/dev/null
 l=$("$H" lint); rc=$?
 [ $rc = 0 ] && ok "lint clean hub passes" || bad "lint clean rc=$rc: $l"
-"$H" skill new grill-me >/dev/null
-"$H" skill new grilling >/dev/null
+"$H" skill new draft-it >/dev/null
+"$H" skill new drafting >/dev/null
 mkdir -p "$HUB_HOME/skills/longdesc"; printf -- "---\nname: wrongname\ndescription: %s\n---\nUses ~/nowhere/missing.sh and tests/e2e/login.mjs\n" "$(printf 'x%.0s' $(seq 1 400))" > "$HUB_HOME/skills/longdesc/SKILL.md"
 echo "orphan" > "$HUB_HOME/kb/topics/orphan.md"
 printf -- '- [ghost](topics/ghost.md)\n' >> "$HUB_HOME/kb/INDEX.md"
 ln -s "$HUB_HOME/skills/deleted" "$HOME/.claude/skills/deleted"
 l=$("$H" lint); rc=$?
 [ $rc = 1 ] && ok "lint fails on errors" || bad "lint rc=$rc"
-has "lint: template placeholder" "$l" "skills/grill-me: still contains template placeholder"
-has "lint: duplicate names" "$l" "skills/grill-me and skills/grilling look like overlapping"
+has "lint: template placeholder" "$l" "skills/draft-it: still contains template placeholder"
+has "lint: duplicate names" "$l" "skills/draft-it and skills/drafting look like overlapping"
 has "lint: name mismatch" "$l" "frontmatter name is 'wrongname'"
 has "lint: long description" "$l" "description is 400 chars"
 has "lint: missing absolute script" "$l" "references ~/nowhere/missing.sh, which does not exist"
@@ -121,12 +122,31 @@ has "lint: dangling link" "$l" "deleted is a dangling link"
 has "lint: index ghost" "$l" "links topics/ghost.md, which does not exist"
 has "lint: unindexed file" "$l" "kb/topics/orphan.md is not listed"
 
+# SQL quoting: apostrophes round-trip and can't break out of the string (bash 3.2 regression)
+HUB_AGENT=codex "$H" post claude "it's a 'quoted' subject" "body with it's" >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && ok "post with apostrophes works" || bad "post with apostrophes rc=$rc"
+has "apostrophes round-trip" "$("$H" inbox claude)" "it's a 'quoted' subject"
+HUB_AGENT=claude "$H" feedback "x'); DROP TABLE feedback; --" >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && ok "feedback with injection text stored" || bad "feedback injection text rc=$rc"
+has "feedback table survives injection text" "$("$H" feedback list)" "DROP TABLE feedback"
+"$H" log codex turn-ended "Codex's reply mentions it's done" >/dev/null 2>&1; rc=$?
+[ $rc = 0 ] && ok "log detail with apostrophe works" || bad "log with apostrophe rc=$rc"
+
+# feedback lifecycle
+fid=$(HUB_AGENT=claude "$H" feedback --area kb "example-app facts too long" | sed -E 's/^feedback #([0-9]+).*/\1/')
+expect_rc 1 "feedback bad area rejected" "$H" feedback --area nope "x"
+expect_rc 1 "feedback unquoted rejected" "$H" feedback two words
+expect_rc 1 "feedback close bad status" "$H" feedback close "$fid" maybe
+expect_rc 0 "feedback close queued" "$H" feedback close "$fid" queued "needs a supervised session"
+has "queued feedback listed" "$("$H" feedback list --status queued)" "example-app facts too long"
+has "digest announces queued work" "$(HUB_PROJECT="$T/work/app" "$H" digest claude)" "hub improvement(s) queued for a supervised session"
+
 # lint: deliberate relationships and declared dependencies are not flagged
 mk() { mkdir -p "$HUB_HOME/skills/$1"; printf -- "---\nname: %s\ndescription: %s\n%s---\n%s\n" "$1" "$2" "${4:-}" "$3" > "$HUB_HOME/skills/$1/SKILL.md"; }
 long=$(printf 'y%.0s' $(seq 1 500))
-mk pentest-run "Run a pentest." "Tools are in [[pentest-tools]]."
-mk pentest-tools "Where the tools live." "Inventory."
-mk alias-me "$long" "Call the Skill tool with \"pentest-run\"." "disable-model-invocation: true
+mk backup-run "Run a backup." "Tools are in [[backup-tools]]."
+mk backup-tools "Where the tools live." "Inventory."
+mk alias-me "$long" "Call the Skill tool with \"backup-run\"." "disable-model-invocation: true
 "
 mkdir -p "$HOME/ext/lib"; echo 'echo hi' > "$HOME/ext/lib/ok.sh"
 mk ext-declared "Uses an external script." "<!-- hub-lint: external ~/ext (owned by another tool) -->
@@ -134,11 +154,20 @@ Run ~/ext/lib/ok.sh and ~/ext/lib/gone.sh"
 mk ext-undeclared "Uses an external script." "Run ~/ext/lib/ok.sh"
 "$H" sync >/dev/null
 l=$("$H" lint)
-hasnt "lint: skills that name each other are not overlaps" "$l" "pentest-run and skills/pentest-tools"
+hasnt "lint: skills that name each other are not overlaps" "$l" "backup-run and skills/backup-tools"
 hasnt "lint: alias description not budgeted" "$l" "skills/alias-me: description is"
 hasnt "lint: declared external not warned" "$l" "skills/ext-declared: depends on"
 has "lint: declared external still errors when missing" "$l" "skills/ext-declared: references ~/ext/lib/gone.sh, which does not exist"
 has "lint: undeclared external warned" "$l" "skills/ext-undeclared: depends on ~/ext/lib/ok.sh"
+
+# HUB_LINK_DIRS replaces the default skill folders (colon-separated, leading ~ expanded, empty entries ignored)
+HUB_LINK_DIRS="$T/other/a::~/custom-skills" "$H" sync >/dev/null
+[ -L "$T/other/a/backup-run" ] && ok "HUB_LINK_DIRS: skill linked into a custom folder" || bad "HUB_LINK_DIRS: no link in $T/other/a"
+[ -L "$HOME/custom-skills/backup-run" ] && ok "HUB_LINK_DIRS: leading ~ expanded" || bad "HUB_LINK_DIRS: no link in $HOME/custom-skills"
+st=$(HUB_LINK_DIRS="$T/other/a" "$H" status)
+has "HUB_LINK_DIRS: status checks the custom folder" "$st" "links in $T/other/a:"
+hasnt "HUB_LINK_DIRS: status drops the default folders" "$st" "links in $HOME/.claude/skills"
+has "no HUB_LINK_DIRS: defaults still used" "$("$H" status)" "links in $HOME/.claude/skills"
 
 echo "---"; echo "passed $pass, failed $fail"
 rm -rf "$T"

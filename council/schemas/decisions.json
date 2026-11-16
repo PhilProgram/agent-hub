@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions", "feedback", "summary"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["proposal_id", "decision", "reason", "title", "area", "change", "files", "feedback_ids"],
+        "properties": {
+          "proposal_id": {"type": "string", "description": "source-prefixed id, e.g. claude:P1 or codex:P2; use merged:N when merging"},
+          "decision": {"type": "string", "enum": ["accept", "queue", "reject"]},
+          "reason": {"type": "string"},
+          "title": {"type": "string"},
+          "area": {"type": "string", "enum": ["kb", "skill", "cli", "hooks", "rules", "other"]},
+          "change": {"type": "string", "description": "final exact change the implementer must make (or the queued proposal text)"},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "feedback_ids": {"type": "array", "items": {"type": "integer"}}
+        }
+      }
+    },
+    "feedback": {
+      "type": "array",
+      "description": "open feedback items not covered by a decision above",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "resolution"],
+        "properties": {
+          "id": {"type": "integer"},
+          "status": {"type": "string", "enum": ["open", "rejected", "queued", "done"]},
+          "resolution": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

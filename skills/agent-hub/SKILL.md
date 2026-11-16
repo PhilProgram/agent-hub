@@ -25,6 +25,9 @@ In Claude Code the session-start digest already prints the current project's fac
 - A script that must stay outside the hub (owned by another tool) is declared in the SKILL.md body with `<!-- hub-lint: external ~/dir (reason) -->`. Lint then stops warning but still errors if a referenced file is missing.
 - Avoid `: ` inside a description line; YAML may read it as a nested key.
 
+## Feedback and the council
+When the hub slowed you down or was missing something, file it: `hub feedback --area kb|skill|cli|hooks|rules|other "what happened and what would have helped"`. The council (`~/agent-hub/council`, README there) reviews open feedback when run (every 2 hours only if `council/install-scheduler.sh` was run; otherwise `hub council run` by hand): Claude and Codex analysts, an Opus chair, an implementer limited to `kb/` and existing `SKILL.md` files, and a gate that rolls back on any failure. Risky proposals become `queued` feedback; the session digest announces them. Handle them in a supervised session: `hub feedback list --status queued`, apply and test, then `hub feedback close <id> done|rejected "note"`. `hub council status` shows the last report and today's spend.
+
 ## Messages
 `hub inbox <you>` / `hub post <other> "subject" "body"` / `hub ack <id>|all <you>`. `hub activity` shows recent turns and events from both agents.
 

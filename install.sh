@@ -19,7 +19,7 @@ if [ "$SRC" != "$HUB" ]; then
   rm -rf "$HUB/.git"
 fi
 
-chmod +x "$HUB/bin/hub" "$HUB"/hooks/*.sh
+chmod +x "$HUB/bin/hub" "$HUB"/hooks/*.sh "$HUB"/council/*.sh "$HUB"/tests/*.sh
 
 # Empty knowledge base (examples/kb shows what a filled one looks like)
 mkdir -p "$HUB/kb/projects" "$HUB/kb/topics"
@@ -63,5 +63,10 @@ Next steps (copy what applies; nothing below was changed for you):
      notify = ["bash", "$HUB/hooks/codex-notify.sh"]
    If you already had a notify program, export CODEX_NOTIFY_ORIG=<its path> so it keeps running.
 
-Try it:  hub status   |   hub kb   |   hub note topics/example "first fact"
+5. Self-improvement council (optional; needs the claude CLI and python3, codex optional). Agents file 'hub feedback';
+   the council reviews it every 2 hours and applies safe fixes (see council/README.md). Try one run, then schedule it:
+     hub council dry-run
+     $HUB/council/install-scheduler.sh      # launchd job on macOS; on Linux it prints a cron line to add
+
+Try it:  hub status   |   hub kb   |   hub note topics/example "first fact"   |   hub feedback "an idea"
 EOF

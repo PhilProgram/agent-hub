@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["applied", "skipped"],
+  "properties": {
+    "applied": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["proposal_id", "files", "summary"],
+      "properties": {"proposal_id": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}, "summary": {"type": "string"}}}},
+    "skipped": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["proposal_id", "reason"],
+      "properties": {"proposal_id": {"type": "string"}, "reason": {"type": "string"}}}}
+  }
+}

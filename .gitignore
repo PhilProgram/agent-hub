@@ -5,3 +5,16 @@
 /kb/
 /.backup/
 .DS_Store
+/council/runs/
+/council/reports/
+/council/snapshots/
+/council/logs/
+/council/state/
+__pycache__/
+
+# Your own skills stay local too. Only the two shipped ones are tracked, so a fork
+# plus `git add .` cannot publish a private skill. To share one on purpose, copy it
+# into examples/skills/ with anything private removed.
+/skills/*
+!/skills/_TEMPLATE/
+!/skills/agent-hub/
